@@ -6,19 +6,21 @@ Build a small, expressive **pixel-art duck hologram** that sits on top
 of a computer monitor and reflects the state of a **GitHub Copilot CLI
 session** running on the user's Mac.
 
-The first prototype will use the **Waveshare ESP32-S3-LCD-1.3-C kit (SKU
-30559)**, which includes:
+The first prototype will use the **Waveshare ESP32-S3-LCD-1.3 "with case
+and prism cube" kit (SKU 30559)**.
+Wiki: <https://www.waveshare.com/wiki/ESP32-S3-LCD-1.3>
 
--   ESP32-S3R8
--   1.3" 240×240 IPS LCD
--   Prism cube for the holographic effect
--   Wi-Fi
--   Bluetooth
--   8 MB PSRAM
--   16 MB flash
--   6-axis IMU
--   USB-C
--   Battery support
+| Part           | Detail                                                        |
+|----------------|---------------------------------------------------------------|
+| MCU            | ESP32-S3R8, dual-core LX7 @ 240 MHz, 512 KB SRAM              |
+| Memory         | 16 MB flash (QIO), 8 MB PSRAM (OPI)                           |
+| Display        | 1.3" 240×240 IPS, **ST7789VW over SPI**, 262K colour          |
+| Optics         | Prism cube (beam splitter) over the LCD, plastic case         |
+| Wireless       | 2.4 GHz Wi-Fi b/g/n, BLE 5                                    |
+| IMU            | QMI8658 6-axis                                                |
+| USB            | USB-C via **CH343 USB-UART bridge**                           |
+| Other          | TF card slot, MX1.25 Li-ion connector + charger, 16-pin GPIO  |
+| Not on board   | Speaker/buzzer, microphone, touch                             |
 
 The long-term goal is a clean, minimal monitor-top object rather than a
 conventional electronics enclosure.
@@ -40,34 +42,23 @@ It should:
 
 ### Initial Copilot states
 
-  -----------------------------------------------------------------------
-  State                               Duck behavior
-  ----------------------------------- -----------------------------------
-  `IDLE`                              Relaxed, blinking, subtle
-                                      breathing/bobbing
+One state per tile in `juno-design-mock.png`:
 
-  `THINKING`                          Looks around, thoughtful
-                                      expression, subtle thought
-                                      animation
+| State        | Mock tile         | Duck behavior                                           |
+|--------------|-------------------|---------------------------------------------------------|
+| `IDLE`       | IDLE              | Relaxed, blinking, subtle breathing/bobbing             |
+| `THINKING`   | THINKING          | Looks around, thoughtful expression, thought bubble     |
+| `WORKING`    | WORKING           | Focused, energetic, typing/working animation            |
+| `PERMISSION` | ASKING PERMISSION | Looks toward user, raises wings, asks for attention     |
+| `SUCCESS`    | SUCCESS           | Happy, celebratory animation                            |
+| `ERROR`      | ERROR             | Confused/worried expression                             |
+| `EXCITED`    | EXCITED           | Wakes up / hops when a session starts                   |
+| `SLEEPING`   | SLEEPING          | Sleeping or resting (session ended or long idle)        |
+| `CONNECTING` | LOADING           | Loading animation while joining Wi-Fi or Wi-Fi was lost |
 
-  `WORKING`                           Focused, energetic, typing/working
-                                      animation
+Blink is not a state; it is an eye overlay used by every awake state.
 
-  `PERMISSION`                        Looks toward user, raises wing,
-                                      asks for attention
-
-  `SUCCESS`                           Excited, happy, celebratory
-                                      animation
-
-  `ERROR`                             Confused/worried expression
-
-  `OFFLINE`                           Sleeping or resting
-
-  `CONNECTING`                        Loading/searching animation
-  -----------------------------------------------------------------------
-
-The exact state vocabulary can evolve once we understand what Copilot
-CLI exposes.
+What triggers each state is defined in Phase 6.
 
 ------------------------------------------------------------------------
 
@@ -82,19 +73,20 @@ The initial architecture:
 │  GitHub Copilot CLI           │
 │          │                    │
 │          ▼                    │
-│  Copilot event/state adapter  │
+│  Copilot CLI hooks            │
+│  (~/.copilot/hooks/duck.json) │
 │          │                    │
 │          ▼                    │
-│  TypeScript bridge service     │
+│  curl POST (fire-and-forget)  │
 └──────────┬────────────────────┘
            │
-         Wi-Fi
+     Home Wi-Fi (HTTP)
            │
            ▼
 ┌───────────────────────────────┐
 │       Waveshare ESP32-S3      │
 │                               │
-│  Wi-Fi receiver               │
+│  HTTP server (duck.local)     │
 │          │                    │
 │          ▼                    │
 │  Duck state machine           │
@@ -115,12 +107,17 @@ The initial architecture:
 
 ## Design principle
 
-Keep the Mac-side service responsible for **what is happening**.
+Keep the Mac side (hooks) responsible for **what is happening**.
 
-Keep the ESP32 responsible for **how the duck looks and moves**.
+Keep the ESP32 responsible for **how the duck looks and moves**, and
+for state timeouts (see Phase 4).
 
 This allows the animation system to remain responsive even if network
 messages arrive infrequently.
+
+There is no Mac-side service. Copilot CLI hooks already fire on every
+lifecycle event; each hook runs `curl` straight to the duck. Add a Mac
+bridge only if a future need (e.g. merging several sessions) requires one.
 
 ------------------------------------------------------------------------
 
@@ -136,110 +133,111 @@ Define the duck's visual language before writing the animation system.
 -   White duck
 -   Yellow/orange beak
 -   Minimal palette
--   Designed for a 240×240 canvas
--   Dark/black background
+-   Drawn on a fixed **60×60 logical pixel grid**, scaled by an integer
+    factor (4× on the 240×240 LCD, 8× on the 480×480 AMOLED)
+-   Pure black (`#000000`) background; black reads as transparent in
+    the prism
+-   Avoid grey and dim colours (grey laptop, grey error swirl, dark
+    blue effects in the mock); they look faint or muddy in the prism.
+    Use bright white, orange/yellow, and saturated cyan/blue only.
 -   No unnecessary text
 -   Strong silhouette
 -   Large readable eyes
 -   Expressions must remain recognizable at small size
 
-### Initial design states
+### Prism check before drawing
 
-Create sprite/keyframe concepts for:
+Before redrawing anything, show the mock on the real prism (bring-up
+step 5, Phase 7) and confirm which colours survive: navy background,
+grey laptop, grey swirl, dim blue effects. Adjust the palette rules
+above to what you actually see.
 
-1.  Idle
-2.  Blink
-3.  Thinking
-4.  Working
-5.  Permission request
-6.  Success
-7.  Error
-8.  Sleeping
-9.  Connecting/loading
+### Design states
+
+`juno-design-mock.png` is the concept reference. It is not pixel-exact
+(soft edges, uneven pixel sizes), so **redraw each tile on the 60×60
+grid** in a pixel editor (Aseprite or Piskel) before use.
+
+Sprites needed: one base pose per state (9, matching the mock), plus
+eye overlays (open, closed/blink, happy `^ ^`, worried) and effect
+sprites (thought bubble, sparkles, Zzz, motion lines, spinner dots).
 
 ### Animation philosophy
 
-Avoid traditional large sprite sheets where possible.
+Hybrid: **base pose sprite per state + overlays + integer offsets.**
 
-Instead, build the duck from reusable layers:
+Poses like sleeping, working (laptop) and thinking (wing on chin)
+change the whole silhouette, so they can't come from one shared body.
+Each state gets its own base sprite; small overlays add life:
 
 ``` text
-Duck
- ├── body
- ├── head
- ├── eyes
- ├── pupils
- ├── beak
- ├── wings
- ├── feet
- └── effects
+frame = base pose (per state)
+      + eye overlay (blink, look direction)
+      + effects (bubble, sparkles, Zzz, ...)
+      + whole-pixel offset (bob, breathe, hop)
 ```
 
-This should make it possible to procedurally animate:
+Procedural motion is limited to:
 
--   blinking
--   eye movement
--   pupil movement
--   breathing
--   body bobbing
--   head tilt
--   wing movement
--   beak movement
--   small particles
--   squash/stretch
--   jumping
+-   blinking (eye overlay swap)
+-   pupil/look direction (overlay swap)
+-   bobbing, breathing, hopping (integer pixel offsets)
+-   small particles/effects
 
-This will give the duck much more personality than a collection of
-static images.
+Skip rotation, head tilt and squash/stretch; they look jagged on
+low-resolution pixel art. Use extra drawn frames instead.
 
 ------------------------------------------------------------------------
 
 # 5. Phase 1 --- Development Environment
 
-This can be done before the hardware arrives.
-
-## Mac development
-
-Set up a dedicated project repository.
-
-Suggested structure:
+## Repository layout
 
 ``` text
-copilot-duck/
+holo-duck/
 ├── README.md
-├── docs/
-│   └── build-plan.md
-├── mac/
-│   ├── src/
-│   ├── package.json
-│   └── tsconfig.json
-├── firmware/
-│   └── ...
+├── copilot-duck-build-plan.md
+├── hooks/
+│   └── duck.json         # Copilot CLI hooks → curl (copy to ~/.copilot/hooks/)
+├── firmware/             # PlatformIO + Arduino
+│   ├── platformio.ini
+│   └── src/
+│       ├── main.cpp      # Wi-Fi, mDNS, HTTP, LCD push, backlight
+│       ├── duck.h/.cpp   # animation engine (no network code)
+│       └── sprites.h     # generated by tools/png2c.py
 ├── assets/
-│   ├── sprites/
-│   └── animations/
+│   └── sprites/          # Aseprite/PNG sources
 └── tools/
+    └── png2c.py          # PNG → RGB565 C array (Pillow)
 ```
 
-### Mac-side stack
+### Engine
 
-Preferred:
+The engine lives in `firmware/src/duck.cpp` and draws into the
+240×240 RGB565 sprite buffer:
 
--   TypeScript
--   Node.js
--   WebSocket or lightweight HTTP/UDP transport
--   JSON state messages
-
-Example message:
-
-``` json
-{
-  "state": "working",
-  "timestamp": 1727700000000
-}
+``` cpp
+void duck_set_state(DuckState s);
+void duck_tick(uint32_t now_ms, uint16_t* fb);
 ```
 
-Keep the protocol deliberately simple.
+Animations are developed **on the device**: edit, `pio run -t upload`
+(~15--20 s), then switch states with
+`curl -d thinking http://duck.local/state`. No Mac simulator; add one
+only if flashing becomes the bottleneck.
+
+No TypeScript/Node is needed.
+
+### Message format
+
+`POST http://duck.local/state` with a plain-text body naming the state:
+
+``` text
+working
+```
+
+Unknown states are ignored. No JSON, no timestamp; add fields only when
+something needs them.
 
 ------------------------------------------------------------------------
 
@@ -252,28 +250,92 @@ the board.
 
 The ESP32 should:
 
-1.  Connect to Wi-Fi.
-2.  Connect to the Mac-side service.
-3.  Receive state messages.
-4.  Maintain the current duck state.
-5.  Render animation frames.
-6.  Transition smoothly between states.
+1.  Join home Wi-Fi (credentials in a gitignored
+    `firmware/src/secrets.h`); show `CONNECTING` meanwhile.
+2.  Advertise itself as `duck.local` via mDNS.
+3.  Run an HTTP server accepting `POST /state`.
+4.  Pass the state to the engine (`duck_set_state`).
+5.  Render frames (`duck_tick`) and push them to the LCD.
+6.  Return to `CONNECTING` if Wi-Fi drops.
 
-### Recommended firmware approach
+### Firmware stack (decided)
 
-Start with the Waveshare-supported environment.
+-   PlatformIO + Arduino framework, **Arduino core 2.0.x**. Waveshare
+    tests 2.0.12; PlatformIO has no 2.0.12 build, so pin
+    `platform = espressif32@6.5.0` (core 2.0.14). Do not use core 3.x;
+    TFT_eSPI has known problems on it.
+-   **TFT_eSPI 2.5.0** (same as Waveshare's demos), configured with
+    build flags instead of editing the library's `User_Setup.h`.
+-   A 240×240 `TFT_eSprite` is the framebuffer; push it once per frame.
+    This is how the community prism projects do it.
+-   **No LVGL** (it is a widget toolkit; we only draw sprites).
+-   Wi-Fi, `WebServer` and `ESPmDNS` come with the Arduino core; no
+    extra libraries.
+-   Sprites are compiled into flash (16 MB is plenty); the TF card is
+    not used.
 
-Evaluate:
+### Board settings and pins (from the Waveshare wiki, demo and schematic)
 
--   Arduino
--   ESP-IDF
--   LVGL
+``` ini
+; firmware/platformio.ini
+[env:duck]
+platform = espressif32@6.5.0
+board = esp32-s3-devkitc-1
+framework = arduino
+board_build.flash_mode = qio
+board_upload.flash_size = 16MB
+board_build.arduino.memory_type = qio_opi      ; 8 MB OPI PSRAM
+board_build.partitions = huge_app.csv
+monitor_speed = 115200
+lib_deps = bodmer/TFT_eSPI@2.5.0
+build_flags =
+  -DBOARD_HAS_PSRAM
+  -DARDUINO_USB_CDC_ON_BOOT=0                  ; serial goes through the CH343
+  -DUSER_SETUP_LOADED -DST7789_DRIVER
+  -DTFT_WIDTH=240 -DTFT_HEIGHT=240
+  -DTFT_MOSI=41 -DTFT_SCLK=40 -DTFT_CS=39 -DTFT_DC=38 -DTFT_RST=42
+  -DTFT_INVERSION_ON -DTFT_RGB_ORDER=TFT_RGB
+  -DSPI_FREQUENCY=40000000
+```
 
-For the first prototype, prioritize **fast iteration and reliable
-rendering** over architectural purity.
+| Signal              | GPIO |
+|---------------------|------|
+| LCD MOSI            | 41   |
+| LCD SCLK            | 40   |
+| LCD CS              | 39   |
+| LCD DC              | 38   |
+| LCD RST             | 42   |
+| LCD backlight (PWM) | 20   |
 
-If LVGL makes the graphics pipeline unnecessarily complicated, a custom
-lightweight renderer may be preferable for the small 240×240 display.
+### Board gotchas
+
+-   **Prism mirroring is solved:** Waveshare's `*_Prism` demos differ
+    from `*_NoPrism` only by `tft.setRotation(4)` (mirrored) instead of
+    `setRotation(2)`. Use `setRotation(4)`; no mirror flags needed.
+-   **Backlight is GPIO 20** (schematic net `BL_PWM` → NPN transistor).
+    Waveshare's ESP-IDF `main.c` says `PIN_NUM_BL 4`; that is wrong for
+    this board. Drive it with `ledcWrite` PWM for brightness.
+-   Call `tft.invertDisplay(1)` and `sprite.setSwapBytes(true)` when
+    pushing RGB565 arrays, or colours come out wrong.
+-   Full-frame push at 40 MHz SPI takes ≈ 23 ms, so ~40 FPS is the
+    ceiling. 30 FPS fits; if it gets tight, push only the rectangle
+    around the duck.
+-   IPS black is not truly black (backlight bleed shows as a faint
+    square in the prism). Keep the backlight as low as looks good, and
+    turn it off after a while in `SLEEPING`.
+-   Mac flashing: the USB-C port is a CH343 serial bridge. If upload
+    fails, install the WCH CH34x Mac driver (wiki FAQ) and/or hold
+    Reset for >1 s and retry.
+
+### Reference projects
+
+-   Waveshare demo zip, `Arduino/examples/01_AstronautClock/
+    AstronautClock_Prism` (official prism config)
+-   [VolosR/esp32Prism](https://github.com/VolosR/esp32Prism)
+    `holly/holly.ino`: ~40 lines; TFT_eSPI + full-screen sprite +
+    `setRotation(4)`. Closest template for our firmware.
+-   [nishad2m8/WS-1.3](https://github.com/nishad2m8/WS-1.3),
+    [LINXX3 prism weather station](https://github.com/LINXX3/ESP32-S3-LCD-1.3---Prism-Version---Weather-Station)
 
 ------------------------------------------------------------------------
 
@@ -281,32 +343,22 @@ lightweight renderer may be preferable for the small 240×240 display.
 
 ## Initial target
 
-Aim for approximately:
-
-**30--60 FPS**
+Render at **30 FPS** (the SPI ceiling is ~40 FPS; see Phase 2). Animate
+sprites at about **8--12 FPS** (normal for pixel art); offsets and
+effects can update every frame.
 
 The duck should feel smooth rather than like a slideshow.
 
 ### Rendering layers
 
-A frame could conceptually be:
-
 ``` text
-background
+background (#000)
     ↓
 shadow
     ↓
-body
+base pose (per state)
     ↓
-head
-    ↓
-wings
-    ↓
-eyes
-    ↓
-pupils
-    ↓
-beak
+eye overlay
     ↓
 effects
 ```
@@ -321,8 +373,6 @@ the holographic effect.
 Build a small animation/state system rather than hard-coding animations
 directly into the network logic.
 
-Example:
-
 ``` text
 DuckState
   IDLE
@@ -331,157 +381,162 @@ DuckState
   PERMISSION
   SUCCESS
   ERROR
-  OFFLINE
+  EXCITED
+  SLEEPING
   CONNECTING
 ```
 
-Each state gets:
-
-``` text
-enter()
-update(deltaTime)
-render()
-exit()
-```
+Each state is a table entry (base pose frames, frame rate, eye
+behaviour, effects, bob pattern), not a class. One `duck_tick` reads
+the current entry and draws.
 
 Example:
 
 ``` text
 WORKING
 
-body:
-  subtle 2–3 px bob
+base pose:
+  duck at laptop, 2–3 frames of wing "typing"
+
+offset:
+  subtle 1–2 px bob
 
 eyes:
-  occasionally look toward cursor/focus direction
-
-wings:
-  periodic typing-like movement
-
-head:
-  small forward tilt
+  occasionally look toward the screen
 
 effects:
   occasional tiny motion lines
 ```
 
+### Timeouts (owned by the ESP32)
+
+Hooks only report changes; the device must not get stuck if an event is
+missed (e.g. Esc/Ctrl+C interrupts, crashed session):
+
+| From                              | To         | After        |
+|-----------------------------------|------------|--------------|
+| `EXCITED`                         | `IDLE`     | ~2 s         |
+| `SUCCESS`                         | `IDLE`     | ~3 s         |
+| `ERROR`                           | `IDLE`     | ~5 s         |
+| `THINKING`/`WORKING`/`PERMISSION` | `IDLE`     | ~5 min with no message |
+| `IDLE`                            | `SLEEPING` | ~10 min      |
+
+Any incoming message wakes the duck. All durations are constants to
+tune on real sessions.
+
 ------------------------------------------------------------------------
 
-# 9. Phase 5 --- Mac ↔ ESP32 Communication
-
-## Initial protocol
-
-Use a persistent connection if practical.
-
-Preferred:
+# 9. Phase 5 --- Mac → ESP32 Communication
 
 ``` text
-Mac TypeScript service
+Copilot CLI hook
         │
-        │ WebSocket
+        │ curl -d <state> http://duck.local/state  (fire-and-forget)
         ▼
       ESP32
 ```
 
-Messages should be small and state-oriented.
-
-Example:
-
-``` json
-{
-  "type": "state",
-  "state": "thinking"
-}
-```
-
-Potential future messages:
-
-``` json
-{
-  "type": "state",
-  "state": "working",
-  "detail": "editing"
-}
-```
-
-``` json
-{
-  "type": "event",
-  "event": "success"
-}
-```
-
-The ESP32 should not need to understand Copilot itself.
+-   One-way, stateless HTTP. No persistent connection, no Mac service.
+-   Hooks background `curl` with a short timeout, so a powered-off duck
+    never slows Copilot down.
+-   Several Copilot sessions at once: **last message wins**. Add
+    merging by priority only if it turns out to be confusing.
+-   Only the state name is sent; no prompts, file names or other
+    session content leave the Mac.
+-   The ESP32 does not need to understand Copilot itself.
 
 ------------------------------------------------------------------------
 
 # 10. Phase 6 --- Copilot CLI Integration
 
-This is the most uncertain part of the project and should be isolated
-from the rest of the system.
+Copilot CLI **hooks** cover this. Hooks are JSON files in
+`~/.copilot/hooks/` (user-level, all repos) that run a command on each
+lifecycle event. Reference:
+<https://docs.github.com/en/copilot/reference/hooks-configuration>
 
-## Goal
+## Hook → DuckState mapping
 
-Determine what signals/events can reliably tell us:
+| Hook event                                                       | DuckState    |
+|------------------------------------------------------------------|--------------|
+| `sessionStart`                                                   | `EXCITED`    |
+| `userPromptSubmitted`                                            | `THINKING`   |
+| `preToolUse`                                                     | `WORKING`    |
+| `notification` (`permission_prompt` or `elicitation_dialog`)     | `PERMISSION` |
+| `agentStop`                                                      | `SUCCESS`    |
+| `errorOccurred`                                                  | `ERROR`      |
+| `sessionEnd`                                                     | `SLEEPING`   |
 
--   Copilot started working
--   Copilot is thinking
--   Copilot is modifying files
--   Copilot is waiting for permission
--   Copilot completed successfully
--   Copilot encountered an error
--   Copilot became inactive
+Notes:
 
-### Strategy
+-   Use `notification`, **not** `permissionRequest`, for `PERMISSION`.
+    `permissionRequest` fires even when the tool is auto-approved.
+-   `agentStop` fires at the end of **every** turn, so `SUCCESS` means
+    "done, your turn", not "task succeeded". Keep the celebration short
+    so it doesn't get annoying.
+-   Ignore `postToolUse`/`postToolUseFailure`. Mapping them would make
+    the duck flicker during fast tool chains, and failed tool calls
+    (e.g. a grep with no matches) are routine, not errors. The duck
+    stays `WORKING` until the turn ends.
+-   Esc/Ctrl+C may not fire `agentStop`; the stale timeout in Phase 4
+    covers it.
 
-Investigate available Copilot CLI:
+## `hooks/duck.json`
 
--   hooks
--   events
--   lifecycle signals
--   command output
--   shell integration
--   process state
-
-Do not tightly couple the animation engine to a particular Copilot
-implementation.
-
-Instead:
-
-``` text
-Copilot
-   ↓
-Copilot adapter
-   ↓
-normalized DuckState
-   ↓
-WebSocket
-   ↓
-ESP32
+``` json
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart":        [{ "type": "command", "bash": "curl -s -m 1 -d excited    http://duck.local/state >/dev/null 2>&1 &" }],
+    "userPromptSubmitted": [{ "type": "command", "bash": "curl -s -m 1 -d thinking   http://duck.local/state >/dev/null 2>&1 &" }],
+    "preToolUse":          [{ "type": "command", "bash": "curl -s -m 1 -d working    http://duck.local/state >/dev/null 2>&1 &" }],
+    "notification":        [{ "type": "command", "matcher": "permission_prompt|elicitation_dialog",
+                              "bash": "curl -s -m 1 -d permission http://duck.local/state >/dev/null 2>&1 &" }],
+    "agentStop":           [{ "type": "command", "bash": "curl -s -m 1 -d success    http://duck.local/state >/dev/null 2>&1 &" }],
+    "errorOccurred":       [{ "type": "command", "bash": "curl -s -m 1 -d error      http://duck.local/state >/dev/null 2>&1 &" }],
+    "sessionEnd":          [{ "type": "command", "bash": "curl -s -m 1 -d sleeping   http://duck.local/state >/dev/null 2>&1 &" }]
+  }
+}
 ```
 
-This makes the project resilient to changes in Copilot CLI.
+### Testing hooks without the duck
+
+Independent of the firmware, so it can run alongside bring-up.
+Run `nc -lk 8080` and temporarily point the hooks at
+`http://localhost:8080/state`. Use Copilot normally and check that the
+state sequence printed by `nc` matches the table above.
+
+The duck only ever sees state names, so a change in Copilot CLI means
+editing `duck.json`, not the firmware.
 
 ------------------------------------------------------------------------
 
 # 11. Phase 7 --- Hologram Prototype
 
-Once the board arrives:
+## Bring-up (in order, stop at the first failure)
 
-## First milestone
+1.  **Factory demo.** Power on over USB-C; the board ships with
+    Waveshare's factory demo (RGB colour test, then a status screen).
+    This confirms the LCD and backlight. In that demo, standing the
+    board upright (USB end down) turns the backlight off; that is
+    intended.
+2.  **Serial port.** `brew install platformio`, plug in, run
+    `ls /dev/cu.*`. A new `usbmodem*` or `wchusbserial*` port should
+    appear. If none appears, install the WCH CH34x Mac driver (wiki FAQ).
+3.  **Hello-world + prism orientation.** Flash a sketch that draws a
+    black screen with a white **"F"** in the top-left corner and logs
+    to serial (`pio device monitor`). Through the prism the F must read
+    correctly and sit top-left. Expected to work with `setRotation(4)`;
+    if not, try 5--7 and record the answer here.
+4.  **Network.** Wi-Fi + mDNS + `POST /state` logging the body to
+    serial. `curl -d working http://duck.local/state` from the Mac.
+5.  **Palette check.** `tools/png2c.py` the mock (and a few tiles at
+    4×) to RGB565 and display them. Note which colours fade, and tune
+    backlight PWM (GPIO 20). Feed results back into Phase 0.
 
-Get the Waveshare demo running exactly as shipped.
+Then build the engine on the device.
 
-Verify:
-
--   LCD works
--   Prism works
--   Wi-Fi works
--   USB connection works
--   Firmware can be flashed
--   Serial logging works
-
-Then replace the demo graphics with the duck.
+If the factory demo is ever needed again, its prebuilt firmware is in
+the Waveshare demo zip under `ESP32-S3-LCD-1.3-Demo/Firmware`.
 
 ### Optical target
 
@@ -496,7 +551,8 @@ Important considerations:
 -   Avoid gray backgrounds
 -   Avoid unnecessary UI elements
 -   Keep duck centered
--   Test brightness levels
+-   Tune backlight PWM (GPIO 20): lowest level that still looks bright,
+    to hide IPS backlight bleed
 
 ------------------------------------------------------------------------
 
@@ -507,7 +563,7 @@ First complete demo:
 ``` text
 Start Copilot
       ↓
-Duck wakes up
+Duck wakes up (EXCITED)
       ↓
 Copilot thinks
       ↓
@@ -596,14 +652,16 @@ This should produce a significantly cleaner holographic effect.
 
 The V1 software should therefore avoid being tightly coupled to 240×240.
 
-Use a logical coordinate system where possible.
+The 60×60 logical grid (Phase 0) already handles this: switch the
+integer scale from 4× to 8×.
 
 ------------------------------------------------------------------------
 
 # 15. Future Interaction
 
-The ESP32-S3 board includes an IMU, which can eventually be used for
-personality/interactivity.
+The board's QMI8658 IMU can eventually be used for
+personality/interactivity. Waveshare's Snake and 2048 demos already read
+tilt from it using SensorLib (v0.2.6), so that is the starting point.
 
 Potential ideas:
 
@@ -650,7 +708,8 @@ Potential future behaviors:
 -   alert sound for permission requests
 -   subtle typing sounds
 
-Keep audio out of V1 unless the hardware/software makes it trivial.
+Keep audio out of V1. **The kit has no speaker or buzzer**; sound would
+need an external I2S amp + speaker wired to the 16-pin GPIO header.
 
 The duck should work perfectly without sound.
 
@@ -658,61 +717,53 @@ The duck should work perfectly without sound.
 
 # 17. Development Milestones
 
-## Milestone 1 --- Duck concept
+Milestones 1 and 2 are independent; do them in parallel.
 
--   [ ] Finalize pixel-art duck
--   [ ] Define color palette
--   [ ] Define core expressions
--   [ ] Define animation vocabulary
+## Milestone 1 --- Hardware bring-up (Phase 7)
 
-## Milestone 2 --- Mac prototype
+-   [x] Receive Waveshare board
+-   [ ] Factory demo runs
+-   [ ] Serial port shows up on the Mac
+-   [ ] `firmware/platformio.ini` (Phase 2); hello-world flashes
+-   [ ] Prism "F" test passes; record the working rotation
+-   [ ] Wi-Fi + mDNS + `POST /state` reachable via `curl`
+-   [ ] Mock displayed through the prism; palette + backlight notes
+    recorded in Phase 0
 
--   [ ] Create TypeScript project
--   [ ] Implement normalized DuckState
--   [ ] Create local fake Copilot event generator
--   [ ] Implement WebSocket server
--   [ ] Test state transitions
+## Milestone 2 --- Copilot hooks
 
-## Milestone 3 --- ESP32
+-   [ ] Write `hooks/duck.json`
+-   [ ] Point it at `nc -lk 8080` and verify the state sequence on real
+    sessions (including Esc/Ctrl+C and a permission prompt)
 
--   [ ] Receive Waveshare board
--   [ ] Flash example firmware
--   [ ] Confirm display
--   [ ] Confirm prism
--   [ ] Confirm Wi-Fi
--   [ ] Create minimal firmware
--   [ ] Receive state messages
+## Milestone 3 --- Duck art
 
-## Milestone 4 --- Animation
+-   [ ] Lock the colour palette from the Milestone 1 prism check
+-   [ ] Redraw the 9 mock tiles on the 60×60 grid
+-   [ ] Draw eye overlays and effect sprites
+-   [ ] Convert with `tools/png2c.py` into `firmware/src/sprites.h`
 
--   [ ] Render duck
--   [ ] Idle animation
--   [ ] Blink
--   [ ] Thinking
--   [ ] Working
--   [ ] Permission
--   [ ] Success
--   [ ] Error
--   [ ] Offline
+## Milestone 4 --- Engine on the device
 
-## Milestone 5 --- Copilot integration
+-   [ ] `duck.cpp` (`duck_set_state`, `duck_tick`), driven by
+    `POST /state`
+-   [ ] All 9 states animated, plus blink, at 30 FPS
+-   [ ] Timeouts from Phase 4
+-   [ ] Backlight dims/off in `SLEEPING`
 
--   [ ] Investigate Copilot CLI events/hooks
--   [ ] Implement Copilot adapter
--   [ ] Map Copilot activity → DuckState
--   [ ] Test real sessions
+## Milestone 5 --- First complete prototype
 
-## Milestone 6 --- First complete prototype
-
--   [ ] Mac → Copilot → Wi-Fi → ESP32 → duck
+-   [ ] Copilot → hooks → Wi-Fi → ESP32 → duck
 -   [ ] Verify stability
 -   [ ] Tune animation
 -   [ ] Tune brightness
 -   [ ] Tune prism positioning
 
-## Milestone 7 --- Final physical design
+## Milestone 6 --- Final physical design
 
 -   [ ] Measure monitor
+-   [ ] Start from Waveshare's board/case outline (wiki → Resources →
+    Structure Diagram)
 -   [ ] Design hidden mount
 -   [ ] Evaluate optical geometry
 -   [ ] Evaluate 2.16" AMOLED
@@ -743,21 +794,20 @@ The ideal final experience is:
 
 # 19. Immediate Next Steps
 
-While the Waveshare kit is in transit:
+The hardware has arrived. In order:
 
-1.  Create the project repository.
-2.  Create the TypeScript Mac bridge.
-3.  Define the DuckState protocol.
-4.  Build a fake Copilot event generator.
-5.  Design the pixel-art duck.
-6.  Prototype animations on the Mac.
-7.  Investigate Copilot CLI hooks/events.
-8.  Document the ESP32 communication protocol.
-9.  Prepare the firmware project structure.
-10. When the hardware arrives, connect the existing software rather than
-    starting from scratch.
+1.  Plug in the board and confirm the factory demo runs.
+2.  `brew install platformio`; write `firmware/platformio.ini`
+    (Phase 2) and flash the "F" hello-world. Lock the prism rotation.
+3.  Add Wi-Fi + mDNS + `POST /state`; `curl` it from the Mac.
+4.  Display the mock through the prism; record palette and backlight
+    findings.
+5.  In parallel with 1--4: write `hooks/duck.json` and verify it
+    against `nc` on real sessions.
+6.  Redraw the duck with the confirmed palette, then build the engine
+    on the device.
 
-The key objective during the 2--3 week wait is:
+The key objective for this week:
 
-**Have the software architecture and duck animations ready before the
-hardware arrives.**
+**A white "F" reading correctly through the prism, reachable at
+`duck.local`, and hooks verified.**
