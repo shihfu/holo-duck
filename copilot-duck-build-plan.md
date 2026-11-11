@@ -317,6 +317,22 @@ parts matter (verified on the device):
 -   `state=`: `curl -d` sends form encoding, and the Arduino WebServer
     drops a bare form body without `=`.
 
+`GET http://duck.local/status` reports uptime, the reason for the last
+reset, Wi-Fi drops since boot, and the current state. Use it to check
+stability when the board is not on the Mac:
+
+``` text
+$ curl -4 http://duck.local/status
+uptime_s 86400
+reset poweron
+wifi_drops 0
+state idle
+```
+
+A small `uptime_s` with `reset poweron` means the power was cut (for
+example, the monitor turned off its USB ports). `panic`, `task_wdt`,
+`int_wdt` or `brownout` means a crash or a weak power supply.
+
 ------------------------------------------------------------------------
 
 # 6. Phase 2 --- ESP32 Firmware Skeleton
@@ -891,8 +907,9 @@ Milestones 1 and 2 are independent; do them in parallel.
 ## Milestone 5 --- First complete prototype
 
 -   [x] Copilot → hooks → Wi-Fi → ESP32 → duck (Phase 8 demo passed)
--   [ ] Verify stability: log serial output for a day of real use;
-    look for resets, `wifi lost` and missed states
+-   [ ] Verify stability: after a day of real use on the monitor's USB
+    port, check `curl -4 http://duck.local/status` for resets and Wi-Fi
+    drops
 -   [x] Tune animation
 -   [x] Tune brightness (backlight 120)
 -   [ ] Tune prism positioning

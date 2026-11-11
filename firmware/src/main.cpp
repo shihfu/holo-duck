@@ -2,6 +2,8 @@
 #include <TFT_eSPI.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <esp_system.h>
+#include <esp_timer.h>
 
 #include "duck.h"
 #include "secrets.h"
@@ -12,6 +14,7 @@ constexpr uint32_t FRAME_MS = 33;  // ~30 FPS; a full push takes ~23 ms
 TFT_eSPI tft;
 TFT_eSprite frame(&tft);
 WebServer server(80);
+uint32_t wifi_drops = 0;
 
 // The prism mirrors the image, but TFT_eSPI 2.5.0 has no mirrored ST7789
 // rotations (setRotation(4) == 0). Rotation 2 writes MADCTL MX|MY; clearing
@@ -37,6 +40,19 @@ void handleState() {
   server.send(400, "text/plain", "unknown state\n");
 }
 
+// For checking stability without the serial port: a reset shows as a small
+// uptime and a reset reason other than poweron.
+void handleStatus() {
+  static const char *const RESET[] = {"unknown", "poweron", "ext", "sw", "panic", "int_wdt",
+                                      "task_wdt", "wdt", "deepsleep", "brownout", "sdio"};
+  size_t r = esp_reset_reason();
+  server.send(200, "text/plain",
+              String("uptime_s ") + (uint32_t)(esp_timer_get_time() / 1000000) +
+                  "\nreset " + (r < sizeof RESET / sizeof *RESET ? RESET[r] : "other") +
+                  "\nwifi_drops " + wifi_drops +
+                  "\nstate " + DUCK_STATE_NAMES[(int)duck_state()] + "\n");
+}
+
 void setup() {
   Serial.begin(115200);
   ledcSetup(BL_CH, 5000, 8);
@@ -52,6 +68,7 @@ void setup() {
   WiFi.setHostname("duck");
   WiFi.begin(WIFI_SSID, WIFI_PASS);  // reconnects on its own if dropped
   server.on("/state", HTTP_POST, handleState);
+  server.on("/status", HTTP_GET, handleStatus);
   server.begin();
 }
 
@@ -67,7 +84,10 @@ void watchWifi(uint32_t now) {
     MDNS.addService("http", "tcp", 80);
   }
   if (up) Serial.printf("duck: ready at http://duck.local/state (%s)\n", WiFi.localIP().toString().c_str());
-  else Serial.println("duck: wifi lost");
+  else {
+    wifi_drops++;
+    Serial.println("duck: wifi lost");
+  }
 }
 
 void loop() {
