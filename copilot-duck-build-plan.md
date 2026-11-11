@@ -52,7 +52,7 @@ One state per tile in `juno-design-mock.png`:
 | `PERMISSION` | ASKING PERMISSION | Looks toward user, raises wings, asks for attention     |
 | `SUCCESS`    | SUCCESS           | Happy, celebratory animation                            |
 | `ERROR`      | ERROR             | Confused/worried expression                             |
-| `EXCITED`    | EXCITED           | Wakes up / hops when a session starts                   |
+| `EXCITED`    | EXCITED           | Wakes up / hops when a message wakes it from `SLEEPING` |
 | `SLEEPING`   | SLEEPING          | Sleeping or resting (session ended or long idle)        |
 | `CONNECTING` | LOADING           | Loading animation while joining Wi-Fi or Wi-Fi was lost |
 
@@ -137,9 +137,10 @@ Define the duck's visual language before writing the animation system.
     factor (4× on the 240×240 LCD, 8× on the 480×480 AMOLED)
 -   Pure black (`#000000`) background; black reads as transparent in
     the prism
--   Avoid grey and dim colours (grey laptop, grey error swirl, dark
-    blue effects in the mock); they look faint or muddy in the prism.
-    Use bright white, orange/yellow, and saturated cyan/blue only.
+-   The mock's palette works as-is (verified through the prism at
+    backlight 100/255): white, greys down to `#404040`, yellow, orange,
+    red, green, cyan, blue, dark blue, and navy all read clearly. Keep
+    the duck itself the brightest thing on screen.
 -   No unnecessary text
 -   Strong silhouette
 -   Large readable eyes
@@ -147,45 +148,84 @@ Define the duck's visual language before writing the animation system.
 
 ### Prism check before drawing
 
-Before redrawing anything, show the mock on the real prism (bring-up
-step 5, Phase 7) and confirm which colours survive: navy background,
-grey laptop, grey swirl, dim blue effects. Adjust the palette rules
-above to what you actually see.
+**Done** (bring-up step 5, Phase 7). The full mock, all 9 tiles at
+240×240, and 12 labelled swatches were shown through the prism. No
+colour or element faded, including the grey laptop, grey bubble, grey
+swirl, and dark spinner dots. The black square edge is faint at
+backlight 100.
 
 ### Design states
 
-`juno-design-mock.png` is the concept reference. It is not pixel-exact
-(soft edges, uneven pixel sizes), so **redraw each tile on the 60×60
-grid** in a pixel editor (Aseprite or Piskel) before use.
+`juno-design-mock.png` is the concept reference. It is an AI-style
+render: soft edges, uneven pixel blocks (6.4--7.5 px) and about 6,700
+colours. A plain downscale blurs it.
 
-Sprites needed: one base pose per state (9, matching the mock), plus
-eye overlays (open, closed/blink, happy `^ ^`, worried) and effect
-sprites (thought bubble, sparkles, Zzz, motion lines, spinner dots).
+**Base sprites (done):** `tools/mock2sprites.py` cuts each mock tile
+into `assets/sprites/<state>.png`. The mock draws the duck at different
+sizes (loading is ~17% smaller than idle, permission ~9% larger), so the
+script scales every tile to the same duck: 33 px from head to feet,
+feet centred at x = 30, standing on y = 58. Keep these numbers if you
+redraw a tile, so the duck does not jump between states.
+
+To keep the pixels crisp, the script sets each output pixel from the
+matching block of mock pixels:
+
+1.  It ignores the navy panel background.
+2.  If the duck covers less than half of the block, the pixel is black.
+3.  Otherwise, it takes the mean colour of the duck pixels and snaps it
+    to a fixed 16-colour palette taken from the mock.
+
+A majority vote per block was tried first; it lost the eyes and thin
+lines. A hand redraw in a pixel editor (Aseprite or Piskel) is now
+optional: the extracted sprites passed review on the device.
 
 ### Animation philosophy
 
-Hybrid: **base pose sprite per state + overlays + integer offsets.**
-
-Poses like sleeping, working (laptop) and thinking (wing on chin)
-change the whole silhouette, so they can't come from one shared body.
-Each state gets its own base sprite; small overlays add life:
+**Build-time frames (done).** Poses like sleeping, working (laptop)
+and thinking (wing on chin) change the whole silhouette, so each state
+has its own base sprite. `tools/animate.py` moves parts of each base
+sprite by whole pixels to build finished frames:
 
 ``` text
-frame = base pose (per state)
-      + eye overlay (blink, look direction)
-      + effects (bubble, sparkles, Zzz, ...)
-      + whole-pixel offset (bob, breathe, hop)
+assets/sprites/<state>.png ──animate.py──▶ firmware/src/sprites.h
+                                      └──▶ assets/preview/<state>.gif (4×)
 ```
 
-Procedural motion is limited to:
+-   **Body:** the largest connected shape of non-black pixels. Duck
+    motions (sway, tilt, wings, hops) move only body pixels.
+-   **Effects:** all other pixels (bubble dots, marks, lines, swirl).
+    Effect motions move only effect pixels. A rectangle that overlaps
+    both never drags the other along, so the thought bubble keeps its
+    outline when the head tilts.
+-   Small per-state rectangles in the script mark wings, tail, head
+    and feet. Colour finds the eyes (dark pixels inside white) and the
+    beak and feet (orange).
+-   **Squash and stretch:** hops crouch, stretch on take-off and land
+    squashed. The ground shadow narrows while the duck is in the air.
+-   Each state gets a frame sequence plus a closed-eye copy of every
+    frame. Duplicate frames are stored once.
+-   The engine plays the sequence from state entry. Every 2--6 s at
+    random it shows the closed-eye copy for 120 ms (blink).
+-   Result: 126 unique 60×60 frames, 885 KB. The firmware uses 54% of
+    the app partition.
 
--   blinking (eye overlay swap)
--   pupil/look direction (overlay swap)
--   bobbing, breathing, hopping (integer pixel offsets)
--   small particles/effects
+Build-time frames beat runtime part composition: frames are plain
+copies (fastest), and the GIFs show the motion without flashing.
 
-Skip rotation, head tilt and squash/stretch; they look jagged on
-low-resolution pixel art. Use extra drawn frames instead.
+| State | ms/frame | Body motion | Eyes | Effects |
+|---|---|---|---|---|
+| idle | 125 | Breathing, tail wiggle, head tilt, waddle | Blink, glances left and right | -- |
+| thinking | 150 | Head tilts while the dots appear, then the wing taps the chin | Blink, look up at the bubble | Dots appear one by one |
+| working | 100 | Wing types, head bobs | Blink | Motion lines flicker |
+| permission | 100 | Small hops with squash, wings flap | Blink | Orange marks pulse |
+| success | 100 | Jump with squash and stretch, wings flap | Happy `^ ^`, no blink | Sparkles twinkle |
+| error | 100 | Short shake, then the head droops | Wince, then slow blinks | Swirl wobbles |
+| sleeping | 250 | Slow breathing | Closed | Two Z's rise, drift and fade |
+| excited | 80 | Big hop with squash and stretch, wings flap | Blink | Motion lines flicker |
+| connecting | 125 | Walks in place (lean, lift a foot, bob) | Blink, look up at the spinner | Spinner dots rotate |
+
+Skip rotation and smooth tilt; they look jagged on low-resolution pixel
+art.
 
 ------------------------------------------------------------------------
 
@@ -200,44 +240,82 @@ holo-duck/
 ├── hooks/
 │   └── duck.json         # Copilot CLI hooks → curl (copy to ~/.copilot/hooks/)
 ├── firmware/             # PlatformIO + Arduino
-│   ├── platformio.ini
-│   └── src/
-│       ├── main.cpp      # Wi-Fi, mDNS, HTTP, LCD push, backlight
-│       ├── duck.h/.cpp   # animation engine (no network code)
-│       └── sprites.h     # generated by tools/png2c.py
+│   ├── platformio.ini    # env duck (default) + env native (host tests)
+│   ├── src/
+│   │   ├── main.cpp      # Wi-Fi, mDNS, HTTP, LCD push, backlight
+│   │   ├── duck.h/.cpp   # animation engine (no network code)
+│   │   └── sprites.h     # generated by tools/animate.py
+│   └── test/test_duck/   # state-rule tests (Unity, runs on the Mac)
 ├── assets/
-│   └── sprites/          # Aseprite/PNG sources
+│   ├── sprites/          # 60×60 base sprite per state
+│   └── preview/          # 4× GIF per state (generated)
 └── tools/
+    ├── mock2sprites.py   # crisp base sprites cut from the mock
+    ├── animate.py        # base sprites → frames, sprites.h, GIFs
     └── png2c.py          # PNG → RGB565 C array (Pillow)
 ```
 
+Python tools run from a venv: `python3 -m venv tools/.venv &&
+tools/.venv/bin/pip install pillow`.
+
 ### Engine
 
-The engine lives in `firmware/src/duck.cpp` and draws into the
-240×240 RGB565 sprite buffer:
+The engine lives in `firmware/src/duck.cpp`. Each `DuckState` has one
+row in the `RULES` table (timeout, next state) and one sequence in
+`SEQS` (frame time, frame indices, blink copies), in the same order.
+`duck_tick` picks the frame from the time since the state was entered
+(`t0`), shows the blink copy when a blink is due, and draws the 60×60
+frame at 4× into the 240×240 `TFT_eSprite` buffer. A repeat message for
+the current state resets its timeout (`since`) but does not restart the
+animation.
 
 ``` cpp
-void duck_set_state(DuckState s);
-void duck_tick(uint32_t now_ms, uint16_t* fb);
+void duck_set_state(DuckState s, uint32_t now_ms);
+DuckState duck_state();
+uint8_t duck_tick(uint32_t now_ms, uint16_t* fb);  // returns backlight level
 ```
 
-Animations are developed **on the device**: edit, `pio run -t upload`
-(~15--20 s), then switch states with
-`curl -d thinking http://duck.local/state`. No Mac simulator; add one
+Animations are developed with the GIF previews first, then checked
+**on the device**: `pio run -t upload` (~35 s), then switch states with
+`curl -4 -d state=thinking http://duck.local/state`. No Mac simulator; add one
 only if flashing becomes the bottleneck.
+
+The state rules (wake, timeouts, backlight) have host tests. On this
+Mac, run them with the Command Line Tools toolchain (see Phase 2
+gotchas):
+
+``` sh
+cd firmware && DEVELOPER_DIR=/Library/Developer/CommandLineTools pio test -e native
+```
+
+Rebuild the frames after you change a PNG in `assets/sprites/` or a
+motion in `tools/animate.py` (~5 s). Check the GIFs in
+`assets/preview/` before you flash:
+
+``` sh
+tools/.venv/bin/python tools/animate.py
+```
 
 No TypeScript/Node is needed.
 
 ### Message format
 
-`POST http://duck.local/state` with a plain-text body naming the state:
+`POST http://duck.local/state` with one form field naming the state:
 
 ``` text
-working
+state=working
 ```
 
-Unknown states are ignored. No JSON, no timestamp; add fields only when
-something needs them.
+Reply: `204` for a known state, `400` for anything else (ignored). No
+JSON, no timestamp; add fields only when something needs them.
+
+Send it with `curl -4 -d state=working http://duck.local/state`. Both
+parts matter (verified on the device):
+
+-   `-4`: macOS also asks mDNS for an IPv6 address, which the ESP32
+    never answers, so name lookup stalls 5 s. With `-4` it takes ~10 ms.
+-   `state=`: `curl -d` sends form encoding, and the Arduino WebServer
+    drops a bare form body without `=`.
 
 ------------------------------------------------------------------------
 
@@ -294,8 +372,9 @@ build_flags =
   -DUSER_SETUP_LOADED -DST7789_DRIVER
   -DTFT_WIDTH=240 -DTFT_HEIGHT=240
   -DTFT_MOSI=41 -DTFT_SCLK=40 -DTFT_CS=39 -DTFT_DC=38 -DTFT_RST=42
-  -DTFT_INVERSION_ON -DTFT_RGB_ORDER=TFT_RGB
+  -DTFT_INVERSION_ON -DTFT_RGB_ORDER=TFT_BGR
   -DSPI_FREQUENCY=40000000
+  -DLOAD_GLCD                                  ; built-in font for debug text
 ```
 
 | Signal              | GPIO |
@@ -309,23 +388,48 @@ build_flags =
 
 ### Board gotchas
 
--   **Prism mirroring is solved:** Waveshare's `*_Prism` demos differ
-    from `*_NoPrism` only by `tft.setRotation(4)` (mirrored) instead of
-    `setRotation(2)`. Use `setRotation(4)`; no mirror flags needed.
+-   **Prism mirroring (verified on the device):** stock TFT_eSPI 2.5.0
+    has no mirrored ST7789 rotations (`rotation = m % 4`, so
+    `setRotation(4)` is the same as `0`). Use `setRotation(2)`, then
+    rewrite `MADCTL` as `TFT_MAD_MY | TFT_MAD_COLOR_ORDER` (clear `MX`).
+    `MX` is the full 240 px axis, so the library's CGRAM offsets stay
+    valid. See `setPrismRotation()` in `firmware/src/main.cpp`.
 -   **Backlight is GPIO 20** (schematic net `BL_PWM` → NPN transistor).
     Waveshare's ESP-IDF `main.c` says `PIN_NUM_BL 4`; that is wrong for
     this board. Drive it with `ledcWrite` PWM for brightness.
+-   **Colour order is BGR (verified on the device).** Waveshare's
+    config says `TFT_RGB`, but with that setting red and blue swap
+    (yellow shows light blue). Use `-DTFT_RGB_ORDER=TFT_BGR`.
 -   Call `tft.invertDisplay(1)` and `sprite.setSwapBytes(true)` when
     pushing RGB565 arrays, or colours come out wrong.
 -   Full-frame push at 40 MHz SPI takes ≈ 23 ms, so ~40 FPS is the
     ceiling. 30 FPS fits; if it gets tight, push only the rectangle
     around the duck.
 -   IPS black is not truly black (backlight bleed shows as a faint
-    square in the prism). Keep the backlight as low as looks good, and
-    turn it off after a while in `SLEEPING`.
--   Mac flashing: the USB-C port is a CH343 serial bridge. If upload
-    fails, install the WCH CH34x Mac driver (wiki FAQ) and/or hold
-    Reset for >1 s and retry.
+    square in the prism). Use backlight 120/255. The palette check
+    chose 100 over 60, 160 and 255; 120 is slightly brighter. Turn the
+    backlight off after a while in `SLEEPING`.
+-   Mac flashing: the USB-C port is a CH343 serial bridge; macOS's
+    built-in driver handles it. If upload fails, hold Reset for >1 s
+    and retry.
+-   **Wi-Fi must be the Mac's network.** `duck.local` (mDNS) only works
+    on one subnet. Here that is the eero network (192.168.4.0/22), not
+    the TELUS modem's `TELUS5949-2.4G` (192.168.1.x). The ESP32 joins the
+    eero's 2.4 GHz band under the same network name.
+-   **Turn off Wi-Fi modem sleep** (`WiFi.setSleep(false)`). The
+    Arduino core enables modem sleep by default, and it delayed
+    requests by up to 0.93 s. The hooks give curl only 1 s. With
+    modem sleep off, the request median is 32 ms and the maximum is
+    65 ms.
+-   **Opening the serial port resets the board**, even with DTR and RTS
+    held low. Start a serial logger only when a reboot is acceptable.
+-   **Host tests need the Command Line Tools linker.** On this Mac,
+    `xcode-select` points at an older Xcode.app (ld-1266) that cannot
+    read the newer SDK 27.2, so even a hello-world fails to link
+    ("unknown architecture arm64e.x1"). Prefix host builds with
+    `DEVELOPER_DIR=/Library/Developer/CommandLineTools`, or fix it once
+    with `sudo xcode-select -s /Library/Developer/CommandLineTools` or an
+    Xcode update. The ESP32 build is not affected.
 
 ### Reference projects
 
@@ -333,7 +437,8 @@ build_flags =
     AstronautClock_Prism` (official prism config)
 -   [VolosR/esp32Prism](https://github.com/VolosR/esp32Prism)
     `holly/holly.ino`: ~40 lines; TFT_eSPI + full-screen sprite +
-    `setRotation(4)`. Closest template for our firmware.
+    `setRotation(4)` (not mirrored with stock TFT_eSPI; see gotchas).
+    Closest template for our firmware.
 -   [nishad2m8/WS-1.3](https://github.com/nishad2m8/WS-1.3),
     [LINXX3 prism weather station](https://github.com/LINXX3/ESP32-S3-LCD-1.3---Prism-Version---Weather-Station)
 
@@ -386,9 +491,9 @@ DuckState
   CONNECTING
 ```
 
-Each state is a table entry (base pose frames, frame rate, eye
-behaviour, effects, bob pattern), not a class. One `duck_tick` reads
-the current entry and draws.
+Each state is a table entry (a `RULES` row and a `SEQS` sequence), not
+a class. The motion is built into the frames at build time (Phase 0).
+One `duck_tick` reads the current entry and draws.
 
 Example:
 
@@ -415,14 +520,16 @@ missed (e.g. Esc/Ctrl+C interrupts, crashed session):
 
 | From                              | To         | After        |
 |-----------------------------------|------------|--------------|
-| `EXCITED`                         | `IDLE`     | ~2 s         |
+| `EXCITED`                         | latest state received | ~2 s |
 | `SUCCESS`                         | `IDLE`     | ~3 s         |
 | `ERROR`                           | `IDLE`     | ~5 s         |
 | `THINKING`/`WORKING`/`PERMISSION` | `IDLE`     | ~5 min with no message |
 | `IDLE`                            | `SLEEPING` | ~10 min      |
 
-Any incoming message wakes the duck. All durations are constants to
-tune on real sessions.
+A message that arrives while `SLEEPING` plays `EXCITED` first, then
+shows the latest state received (hooks never send `excited`;
+`state=excited` still works for previewing the art). All durations are
+constants to tune on real sessions.
 
 ------------------------------------------------------------------------
 
@@ -431,7 +538,7 @@ tune on real sessions.
 ``` text
 Copilot CLI hook
         │
-        │ curl -d <state> http://duck.local/state  (fire-and-forget)
+        │ curl -4 -d state=<state> http://duck.local/state  (fire-and-forget)
         ▼
       ESP32
 ```
@@ -458,7 +565,6 @@ lifecycle event. Reference:
 
 | Hook event                                                       | DuckState    |
 |------------------------------------------------------------------|--------------|
-| `sessionStart`                                                   | `EXCITED`    |
 | `userPromptSubmitted`                                            | `THINKING`   |
 | `preToolUse`                                                     | `WORKING`    |
 | `notification` (`permission_prompt` or `elicitation_dialog`)     | `PERMISSION` |
@@ -466,8 +572,16 @@ lifecycle event. Reference:
 | `errorOccurred`                                                  | `ERROR`      |
 | `sessionEnd`                                                     | `SLEEPING`   |
 
+Verified on real sessions (CLI 1.0.109): every row above except
+`errorOccurred` and `elicitation_dialog`, which are hard to trigger on
+purpose. `sessionEnd` arrives even though Copilot is exiting.
+
 Notes:
 
+-   `sessionStart` is not used. It fires with the first prompt, not at
+    launch, about 1 s before `userPromptSubmitted`, so `EXCITED` would
+    be replaced at once. The duck plays `EXCITED` itself on wake
+    (Phase 4).
 -   Use `notification`, **not** `permissionRequest`, for `PERMISSION`.
     `permissionRequest` fires even when the tool is auto-approved.
 -   `agentStop` fires at the end of **every** turn, so `SUCCESS` means
@@ -486,24 +600,36 @@ Notes:
 {
   "version": 1,
   "hooks": {
-    "sessionStart":        [{ "type": "command", "bash": "curl -s -m 1 -d excited    http://duck.local/state >/dev/null 2>&1 &" }],
-    "userPromptSubmitted": [{ "type": "command", "bash": "curl -s -m 1 -d thinking   http://duck.local/state >/dev/null 2>&1 &" }],
-    "preToolUse":          [{ "type": "command", "bash": "curl -s -m 1 -d working    http://duck.local/state >/dev/null 2>&1 &" }],
+    "userPromptSubmitted": [{ "type": "command", "bash": "curl -4 -s -m 1 -d state=thinking   http://duck.local/state >/dev/null 2>&1 &" }],
+    "preToolUse":          [{ "type": "command", "bash": "curl -4 -s -m 1 -d state=working    http://duck.local/state >/dev/null 2>&1 &" }],
     "notification":        [{ "type": "command", "matcher": "permission_prompt|elicitation_dialog",
-                              "bash": "curl -s -m 1 -d permission http://duck.local/state >/dev/null 2>&1 &" }],
-    "agentStop":           [{ "type": "command", "bash": "curl -s -m 1 -d success    http://duck.local/state >/dev/null 2>&1 &" }],
-    "errorOccurred":       [{ "type": "command", "bash": "curl -s -m 1 -d error      http://duck.local/state >/dev/null 2>&1 &" }],
-    "sessionEnd":          [{ "type": "command", "bash": "curl -s -m 1 -d sleeping   http://duck.local/state >/dev/null 2>&1 &" }]
+                              "bash": "curl -4 -s -m 1 -d state=permission http://duck.local/state >/dev/null 2>&1 &" }],
+    "agentStop":           [{ "type": "command", "bash": "curl -4 -s -m 1 -d state=success    http://duck.local/state >/dev/null 2>&1 &" }],
+    "errorOccurred":       [{ "type": "command", "bash": "curl -4 -s -m 1 -d state=error      http://duck.local/state >/dev/null 2>&1 &" }],
+    "sessionEnd":          [{ "type": "command", "bash": "curl -4 -s -m 1 -d state=sleeping   http://duck.local/state >/dev/null 2>&1 &" }]
   }
 }
 ```
 
-### Testing hooks without the duck
+Install: `cp hooks/duck.json ~/.copilot/hooks/` (a copy, not a
+symlink). Hooks load when a session starts, so test in a new session.
 
-Independent of the firmware, so it can run alongside bring-up.
-Run `nc -lk 8080` and temporarily point the hooks at
-`http://localhost:8080/state`. Use Copilot normally and check that the
-state sequence printed by `nc` matches the table above.
+### Testing hooks
+
+Run `pio device monitor` in `firmware/` and use Copilot in a new
+terminal. The board prints `duck: state <name>` for each message; check
+the sequence against the table above. Each hook returns in ~20 ms, so
+it never slows Copilot down.
+
+Results from the Phase 8 demo (Milestone 5):
+
+-   A session already running when `duck.json` is installed sends
+    nothing. Hooks load when a session starts.
+-   `permission` shows only while an approval prompt waits. If you
+    approve within about 1 s, the duck can skip `permission`.
+-   After you approve, the duck shows `permission` until the next hook
+    (usually `success` or the next tool's `working`). A long command
+    that you approve keeps the duck on `permission` while it runs.
 
 The duck only ever sees state names, so a change in Copilot CLI means
 editing `duck.json`, not the firmware.
@@ -520,18 +646,23 @@ editing `duck.json`, not the firmware.
     board upright (USB end down) turns the backlight off; that is
     intended.
 2.  **Serial port.** `brew install platformio`, plug in, run
-    `ls /dev/cu.*`. A new `usbmodem*` or `wchusbserial*` port should
-    appear. If none appears, install the WCH CH34x Mac driver (wiki FAQ).
+    `ls /dev/cu.*`. **Done:** the CH343 (`1A86:55D3`) shows as
+    `/dev/cu.usbmodem*` with the built-in macOS driver. macOS asks
+    "Allow accessory to connect?" on first plug-in; accept it, or the
+    board only gets power.
 3.  **Hello-world + prism orientation.** Flash a sketch that draws a
     black screen with a white **"F"** in the top-left corner and logs
     to serial (`pio device monitor`). Through the prism the F must read
-    correctly and sit top-left. Expected to work with `setRotation(4)`;
-    if not, try 5--7 and record the answer here.
+    correctly and sit top-left. **Done:** mirrored rotation 2
+    (`setRotation(2)` with `MX` cleared; see Phase 2 gotchas).
 4.  **Network.** Wi-Fi + mDNS + `POST /state` logging the body to
-    serial. `curl -d working http://duck.local/state` from the Mac.
+    serial. `curl -4 -d state=working http://duck.local/state` from the
+    Mac. **Done:** all states return `204` in 0.07--0.45 s.
 5.  **Palette check.** `tools/png2c.py` the mock (and a few tiles at
     4×) to RGB565 and display them. Note which colours fade, and tune
     backlight PWM (GPIO 20). Feed results back into Phase 0.
+    **Done:** the mock palette works as-is; colour order is BGR;
+    backlight 100/255.
 
 Then build the engine on the device.
 
@@ -561,7 +692,7 @@ Important considerations:
 First complete demo:
 
 ``` text
-Start Copilot
+First prompt after the duck fell asleep
       ↓
 Duck wakes up (EXCITED)
       ↓
@@ -722,41 +853,48 @@ Milestones 1 and 2 are independent; do them in parallel.
 ## Milestone 1 --- Hardware bring-up (Phase 7)
 
 -   [x] Receive Waveshare board
--   [ ] Factory demo runs
--   [ ] Serial port shows up on the Mac
--   [ ] `firmware/platformio.ini` (Phase 2); hello-world flashes
--   [ ] Prism "F" test passes; record the working rotation
--   [ ] Wi-Fi + mDNS + `POST /state` reachable via `curl`
--   [ ] Mock displayed through the prism; palette + backlight notes
+-   [x] Factory demo runs
+-   [x] Serial port shows up on the Mac
+-   [x] `firmware/platformio.ini` (Phase 2); hello-world flashes
+-   [x] Prism "F" test passes: mirrored rotation 2
+-   [x] Wi-Fi + mDNS + `POST /state` reachable via `curl`
+-   [x] Mock displayed through the prism; palette + backlight notes
     recorded in Phase 0
 
 ## Milestone 2 --- Copilot hooks
 
--   [ ] Write `hooks/duck.json`
--   [ ] Point it at `nc -lk 8080` and verify the state sequence on real
-    sessions (including Esc/Ctrl+C and a permission prompt)
+-   [x] Write `hooks/duck.json`; install to `~/.copilot/hooks/`
+-   [x] Verify the state sequence on real sessions, including a
+    permission prompt. Esc/Ctrl+C not tested; the stale timeout
+    (Phase 4) covers it.
 
 ## Milestone 3 --- Duck art
 
--   [ ] Lock the colour palette from the Milestone 1 prism check
--   [ ] Redraw the 9 mock tiles on the 60×60 grid
--   [ ] Draw eye overlays and effect sprites
--   [ ] Convert with `tools/png2c.py` into `firmware/src/sprites.h`
+-   [x] Lock the colour palette from the Milestone 1 prism check
+    (the mock palette as-is)
+-   [x] Crisp base sprites cut from the mock at one duck size
+    (`tools/mock2sprites.py`)
+-   [x] Expressive motion for the 9 states: blink, waddle, tail
+    wiggle, squash and stretch, shadows (`tools/animate.py`)
+-   [x] Generate `firmware/src/sprites.h` and `assets/preview/*.gif`
+    with `tools/animate.py`
+-   [ ] Optional: redraw tiles by hand in a pixel editor
 
 ## Milestone 4 --- Engine on the device
 
--   [ ] `duck.cpp` (`duck_set_state`, `duck_tick`), driven by
-    `POST /state`
--   [ ] All 9 states animated, plus blink, at 30 FPS
--   [ ] Timeouts from Phase 4
--   [ ] Backlight dims/off in `SLEEPING`
+-   [x] `duck.cpp` (`duck_set_state`, `duck_tick`), driven by
+    `POST /state`; `CONNECTING` while Wi-Fi is down
+-   [x] All 9 states animated, plus a random blink, at 30 FPS
+-   [x] Timeouts from Phase 4, including `EXCITED` on wake (host tests)
+-   [x] Backlight off after 5 min in `SLEEPING`
 
 ## Milestone 5 --- First complete prototype
 
--   [ ] Copilot → hooks → Wi-Fi → ESP32 → duck
--   [ ] Verify stability
--   [ ] Tune animation
--   [ ] Tune brightness
+-   [x] Copilot → hooks → Wi-Fi → ESP32 → duck (Phase 8 demo passed)
+-   [ ] Verify stability: log serial output for a day of real use;
+    look for resets, `wifi lost` and missed states
+-   [x] Tune animation
+-   [x] Tune brightness (backlight 120)
 -   [ ] Tune prism positioning
 
 ## Milestone 6 --- Final physical design
@@ -796,18 +934,21 @@ The ideal final experience is:
 
 The hardware has arrived. In order:
 
-1.  Plug in the board and confirm the factory demo runs.
-2.  `brew install platformio`; write `firmware/platformio.ini`
-    (Phase 2) and flash the "F" hello-world. Lock the prism rotation.
-3.  Add Wi-Fi + mDNS + `POST /state`; `curl` it from the Mac.
-4.  Display the mock through the prism; record palette and backlight
-    findings.
-5.  In parallel with 1--4: write `hooks/duck.json` and verify it
-    against `nc` on real sessions.
-6.  Redraw the duck with the confirmed palette, then build the engine
-    on the device.
+1.  ~~Plug in the board and confirm the factory demo runs.~~ Done.
+2.  ~~`brew install platformio`; write `firmware/platformio.ini`
+    (Phase 2) and flash the "F" hello-world. Lock the prism rotation.~~
+    Done: mirrored rotation 2.
+3.  ~~Add Wi-Fi + mDNS + `POST /state`; `curl` it from the Mac.~~ Done.
+4.  ~~Display the mock through the prism; record palette and backlight
+    findings.~~ Done: palette as-is, BGR, backlight 100.
+5.  ~~In parallel with 1--4: write `hooks/duck.json` and verify it
+    on real sessions.~~ Done.
+6.  ~~Redraw the duck with the confirmed palette, then build the engine
+    on the device.~~ Done: crisp sprites from the mock, motion from
+    `tools/animate.py`, and an engine with sequences and blink.
+7.  Run real Copilot sessions end to end (Milestone 5). Check
+    stability, then tune brightness and the prism position.
 
-The key objective for this week:
+The next objective:
 
-**A white "F" reading correctly through the prism, reachable at
-`duck.local`, and hooks verified.**
+**A full day of real Copilot sessions with no stuck states or resets.**
