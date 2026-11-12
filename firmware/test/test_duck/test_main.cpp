@@ -33,25 +33,28 @@ void test_excited_preview_returns_to_idle() {
 
 void test_timeouts() {
   duck_set_state(S::Success, 0);
-  duck_tick(3000, fb);
+  duck_tick(4999, fb);
+  TEST_ASSERT_EQUAL(S::Success, duck_state());
+  duck_tick(5000, fb);
   TEST_ASSERT_EQUAL(S::Idle, duck_state());
-  duck_tick(3000 + 10 * 60000, fb);
+  duck_tick(5000 + 10 * 60000, fb);
   TEST_ASSERT_EQUAL(S::Sleeping, duck_state());
 }
 
 void test_stale_working_returns_to_idle() {
   duck_set_state(S::Working, 0);
-  duck_set_state(S::Working, 4 * 60000);  // each message restarts the stale timer
-  duck_tick(8 * 60000, fb);
+  duck_set_state(S::Working, 25 * 60000);  // each message restarts the stale timer
+  duck_tick(50 * 60000, fb);
   TEST_ASSERT_EQUAL(S::Working, duck_state());
-  duck_tick(9 * 60000, fb);
+  duck_tick(55 * 60000, fb);
   TEST_ASSERT_EQUAL(S::Idle, duck_state());
 }
 
 void test_backlight_turns_off_after_sleeping_a_while() {
   duck_set_state(S::Sleeping, 0);
   TEST_ASSERT_NOT_EQUAL(0, duck_tick(1000, fb));
-  TEST_ASSERT_EQUAL(0, duck_tick(5 * 60000, fb));
+  TEST_ASSERT_NOT_EQUAL(0, duck_tick(19 * 60000, fb));
+  TEST_ASSERT_EQUAL(0, duck_tick(20 * 60000, fb));
 }
 
 void test_connecting_does_not_wake() {

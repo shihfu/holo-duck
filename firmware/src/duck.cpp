@@ -8,8 +8,8 @@
 namespace {
 
 constexpr int GRID = 60, SCALE = 4, W = GRID * SCALE;
-constexpr uint8_t BACKLIGHT = 120;            // 0-255; palette check used 100
-constexpr uint32_t DARK_MS = 5 * 60000;       // backlight off after sleeping this long
+constexpr uint8_t BACKLIGHT = 180;            // 0-255; palette check used 100
+constexpr uint32_t DARK_MS = 20 * 60000;      // backlight off after sleeping this long
 constexpr uint32_t MIN = 60000, NEVER = 0;
 constexpr uint32_t BLINK_MS = 120;            // eyes closed this long, every 2-6 s
 
@@ -23,10 +23,10 @@ struct Rule {
 using S = DuckState;
 const Rule RULES[] = {
     /* Idle       */ {10 * MIN, S::Sleeping},
-    /* Thinking   */ {5 * MIN, S::Idle},
-    /* Working    */ {5 * MIN, S::Idle},
-    /* Permission */ {5 * MIN, S::Idle},
-    /* Success    */ {3000, S::Idle},
+    /* Thinking   */ {30 * MIN, S::Idle},
+    /* Working    */ {30 * MIN, S::Idle},
+    /* Permission */ {30 * MIN, S::Idle},
+    /* Success    */ {5000, S::Idle},
     /* Error      */ {5000, S::Idle},
     /* Sleeping   */ {NEVER, S::Sleeping},
     /* Excited    */ {2000, S::Idle},

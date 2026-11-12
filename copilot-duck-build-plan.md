@@ -422,8 +422,8 @@ build_flags =
     ceiling. 30 FPS fits; if it gets tight, push only the rectangle
     around the duck.
 -   IPS black is not truly black (backlight bleed shows as a faint
-    square in the prism). Use backlight 120/255. The palette check
-    chose 100 over 60, 160 and 255; 120 is slightly brighter. Turn the
+    square in the prism). Use backlight 180/255. The palette check
+    chose 100 over 60, 160 and 255; 180 is brighter. Turn the
     backlight off after a while in `SLEEPING`.
 -   Mac flashing: the USB-C port is a CH343 serial bridge; macOS's
     built-in driver handles it. If upload fails, hold Reset for >1 s
@@ -537,9 +537,9 @@ missed (e.g. Esc/Ctrl+C interrupts, crashed session):
 | From                              | To         | After        |
 |-----------------------------------|------------|--------------|
 | `EXCITED`                         | latest state received | ~2 s |
-| `SUCCESS`                         | `IDLE`     | ~3 s         |
+| `SUCCESS`                         | `IDLE`     | ~5 s         |
 | `ERROR`                           | `IDLE`     | ~5 s         |
-| `THINKING`/`WORKING`/`PERMISSION` | `IDLE`     | ~5 min with no message |
+| `THINKING`/`WORKING`/`PERMISSION` | `IDLE`     | ~30 min with no message |
 | `IDLE`                            | `SLEEPING` | ~10 min      |
 
 A message that arrives while `SLEEPING` plays `EXCITED` first, then
@@ -902,7 +902,7 @@ Milestones 1 and 2 are independent; do them in parallel.
     `POST /state`; `CONNECTING` while Wi-Fi is down
 -   [x] All 9 states animated, plus a random blink, at 30 FPS
 -   [x] Timeouts from Phase 4, including `EXCITED` on wake (host tests)
--   [x] Backlight off after 5 min in `SLEEPING`
+-   [x] Backlight off after 20 min in `SLEEPING`
 
 ## Milestone 5 --- First complete prototype
 
@@ -911,7 +911,7 @@ Milestones 1 and 2 are independent; do them in parallel.
     port, check `curl -4 http://duck.local/status` for resets and Wi-Fi
     drops
 -   [x] Tune animation
--   [x] Tune brightness (backlight 120)
+-   [x] Tune brightness (backlight 180)
 -   [ ] Tune prism positioning
 
 ## Milestone 6 --- Final physical design
