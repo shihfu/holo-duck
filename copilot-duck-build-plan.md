@@ -582,7 +582,7 @@ lifecycle event. Reference:
 | Hook event                                                       | DuckState    |
 |------------------------------------------------------------------|--------------|
 | `userPromptSubmitted`                                            | `THINKING`   |
-| `preToolUse`                                                     | `WORKING`    |
+| `preToolUse`, `postToolUse`                                      | `WORKING`    |
 | `notification` (`permission_prompt` or `elicitation_dialog`)     | `PERMISSION` |
 | `agentStop`                                                      | `SUCCESS`    |
 | `errorOccurred`                                                  | `ERROR`      |
@@ -603,10 +603,14 @@ Notes:
 -   `agentStop` fires at the end of **every** turn, so `SUCCESS` means
     "done, your turn", not "task succeeded". Keep the celebration short
     so it doesn't get annoying.
--   Ignore `postToolUse`/`postToolUseFailure`. Mapping them would make
-    the duck flicker during fast tool chains, and failed tool calls
-    (e.g. a grep with no matches) are routine, not errors. The duck
-    stays `WORKING` until the turn ends.
+-   Map `postToolUse` to `WORKING`. No hook fires when you approve a
+    permission prompt or answer a question, so without it the duck
+    stays `PERMISSION` until the next tool call or the end of the
+    turn. `postToolUse` fires when the tool finishes, so the duck
+    still shows `PERMISSION` while an approved tool runs.
+-   Ignore `postToolUseFailure`. Failed tool calls (e.g. a grep with
+    no matches) are routine, not errors. The duck stays `WORKING`
+    until the turn ends.
 -   Esc/Ctrl+C may not fire `agentStop`; the stale timeout in Phase 4
     covers it.
 
@@ -618,6 +622,7 @@ Notes:
   "hooks": {
     "userPromptSubmitted": [{ "type": "command", "bash": "curl -4 -s -m 1 -d state=thinking   http://duck.local/state >/dev/null 2>&1 &" }],
     "preToolUse":          [{ "type": "command", "bash": "curl -4 -s -m 1 -d state=working    http://duck.local/state >/dev/null 2>&1 &" }],
+    "postToolUse":         [{ "type": "command", "bash": "curl -4 -s -m 1 -d state=working    http://duck.local/state >/dev/null 2>&1 &" }],
     "notification":        [{ "type": "command", "matcher": "permission_prompt|elicitation_dialog",
                               "bash": "curl -4 -s -m 1 -d state=permission http://duck.local/state >/dev/null 2>&1 &" }],
     "agentStop":           [{ "type": "command", "bash": "curl -4 -s -m 1 -d state=success    http://duck.local/state >/dev/null 2>&1 &" }],

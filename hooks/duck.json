@@ -3,6 +3,7 @@
   "hooks": {
     "userPromptSubmitted": [{ "type": "command", "bash": "curl -4 -s -m 1 -d state=thinking   http://duck.local/state >/dev/null 2>&1 &" }],
     "preToolUse":          [{ "type": "command", "bash": "curl -4 -s -m 1 -d state=working    http://duck.local/state >/dev/null 2>&1 &" }],
+    "postToolUse":         [{ "type": "command", "bash": "curl -4 -s -m 1 -d state=working    http://duck.local/state >/dev/null 2>&1 &" }],
     "notification":        [{ "type": "command", "matcher": "permission_prompt|elicitation_dialog",
                               "bash": "curl -4 -s -m 1 -d state=permission http://duck.local/state >/dev/null 2>&1 &" }],
     "agentStop":           [{ "type": "command", "bash": "curl -4 -s -m 1 -d state=success    http://duck.local/state >/dev/null 2>&1 &" }],
