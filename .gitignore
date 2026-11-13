@@ -39,3 +39,6 @@ next-env.d.ts
 .pio/
 firmware/src/secrets.h
 tools/.venv/
+
+# python
+__pycache__/

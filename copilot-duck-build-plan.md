@@ -591,6 +591,9 @@ lifecycle event. Reference:
 | `userPromptSubmitted`                                            | `THINKING`   |
 | `preToolUse`, `postToolUse`                                      | `WORKING`    |
 | `notification` (`permission_prompt` or `elicitation_dialog`)     | `PERMISSION` |
+| `postToolUse` with "User cancelled the request."                 | `IDLE`       |
+| Esc on a permission prompt (`duck-watch.sh`)                     | `IDLE`       |
+| Approving a permission prompt (`duck-watch.sh`)                  | `WORKING`    |
 | `agentStop`                                                      | `SUCCESS`    |
 | `errorOccurred`                                                  | `ERROR`      |
 | `sessionEnd`                                                     | `SLEEPING`   |
@@ -620,13 +623,40 @@ Notes:
 -   Map `postToolUse` to `WORKING`. No hook fires when you approve a
     permission prompt or answer a question, so without it the duck
     stays `PERMISSION` until the next tool call or the end of the
-    turn. `postToolUse` fires when the tool finishes, so the duck
-    still shows `PERMISSION` while an approved tool runs.
+    turn. `postToolUse` fires when the tool finishes. For a permission
+    prompt, `duck-watch.sh` sends `WORKING` as soon as you approve
+    (see below).
 -   Ignore `postToolUseFailure`. Failed tool calls (e.g. a grep with
     no matches) are routine, not errors. The duck stays `WORKING`
     until the turn ends.
--   Esc/Ctrl+C may not fire `agentStop`; the stale timeout in Phase 4
-    covers it.
+-   Cancelling a prompt sends `IDLE`. Verified on CLI 1.0.111:
+    -   Esc on a question (`ask_user`) fires `postToolUse` with
+        `"textResultForLlm":"User cancelled the request."`. The hook
+        checks stdin for that text and sends `idle` instead of
+        `working`.
+    -   Esc on a permission prompt fires **no** hook. `duck-watch.sh`
+        handles it (next note).
+-   No hook fires when you answer a permission prompt. Copilot only
+    writes `permission.completed` to
+    `~/.copilot/session-state/<sessionId>/events.jsonl`. The
+    `permission_prompt` notification starts `hooks/duck-watch.sh` in
+    the background. The script checks that file once per second until
+    the prompt resolves:
+    -   `"kind":"cancelled"` (Esc): sends `idle`.
+    -   `"kind":"approved"` or `"approved-for-location"`: sends
+        `working`. If a `postToolUse` hook already appears after the
+        approval, the tool has finished and the hook sent `working`,
+        so the script sends nothing. This stops a late `working` from
+        replacing `success`.
+    -   Any other result: sends nothing.
+
+    The script stops when Copilot exits (its `$PPID` is the `copilot`
+    process) or after 30 min. Each check reads only the bytes added
+    since the prompt appeared (about 15 ms), so a large log does not
+    slow it down. Reading by line instead took 1.6 s per check on a
+    36 MB log. Verified on CLI 1.0.111.
+-   Esc/Ctrl+C while working may not fire `agentStop`; the stale
+    timeout in Phase 4 covers it.
 
 ## `hooks/duck.json`
 
@@ -636,9 +666,10 @@ Notes:
   "hooks": {
     "userPromptSubmitted": [{ "type": "command", "bash": "curl -4 -s -m 1 -d state=thinking   http://duck.local/state >/dev/null 2>&1 &" }],
     "preToolUse":          [{ "type": "command", "bash": "curl -4 -s -m 1 -d state=working    http://duck.local/state >/dev/null 2>&1 &" }],
-    "postToolUse":         [{ "type": "command", "bash": "curl -4 -s -m 1 -d state=working    http://duck.local/state >/dev/null 2>&1 &" }],
+    "postToolUse":         [{ "type": "command", "bash": "s=working; grep -q ': *\"User cancelled the request\\.\"' && s=idle; curl -4 -s -m 1 -d state=$s http://duck.local/state >/dev/null 2>&1 &" }],
     "notification":        [{ "type": "command", "matcher": "permission_prompt|elicitation_dialog",
-                              "bash": "curl -4 -s -m 1 -d state=permission http://duck.local/state >/dev/null 2>&1 &" }],
+                              "bash": "curl -4 -s -m 1 -d state=permission http://duck.local/state >/dev/null 2>&1 &" },
+                            { "type": "command", "matcher": "permission_prompt", "bash": "sh ~/.copilot/hooks/duck-watch.sh" }],
     "agentStop":           [{ "type": "command", "bash": "curl -4 -s -m 1 -d state=success    http://duck.local/state >/dev/null 2>&1 &" }],
     "errorOccurred":       [{ "type": "command", "bash": "curl -4 -s -m 1 -d state=error      http://duck.local/state >/dev/null 2>&1 &" }],
     "sessionEnd":          [{ "type": "command", "bash": "curl -4 -s -m 1 -d state=sleeping   http://duck.local/state >/dev/null 2>&1 &" }]
@@ -646,8 +677,8 @@ Notes:
 }
 ```
 
-Install: `cp hooks/duck.json ~/.copilot/hooks/` (a copy, not a
-symlink). Hooks load when a session starts, so test in a new session.
+Install: `cp hooks/duck.json hooks/duck-watch.sh ~/.copilot/hooks/`
+(copies, not symlinks). Hooks load when a session starts, so test in a new session.
 
 ### Testing hooks
 
@@ -662,9 +693,10 @@ Results from the Phase 8 demo (Milestone 5):
     nothing. Hooks load when a session starts.
 -   `permission` shows only while an approval prompt waits. If you
     approve within about 1 s, the duck can skip `permission`.
--   After you approve, the duck shows `permission` until the next hook
-    (usually `success` or the next tool's `working`). A long command
-    that you approve keeps the duck on `permission` while it runs.
+-   After you approve, `duck-watch.sh` switches the duck to `working`
+    within about 1 s, even while a long command runs.
+-   Killing Copilot (SIGTERM, or SIGHUP when you close the terminal)
+    still fires `sessionEnd`, so the duck shows `sleeping`.
 
 The duck only ever sees state names, so a change in Copilot CLI means
 editing `duck.json`, not the firmware.
