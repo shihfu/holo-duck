@@ -30,6 +30,7 @@ const Rule RULES[] = {
     /* Error      */ {5000, S::Idle},
     /* Sleeping   */ {NEVER, S::Sleeping},
     /* Excited    */ {2000, S::Idle},
+    /* Welcome    */ {5000, S::Idle},
     /* Connecting */ {NEVER, S::Connecting},
 };
 static_assert(sizeof SEQS / sizeof *SEQS == sizeof RULES / sizeof *RULES, "one sequence per DuckState");
@@ -56,6 +57,10 @@ void enter(DuckState s, uint32_t now) {
 }  // namespace
 
 void duck_set_state(DuckState s, uint32_t now) {
+  if (s == S::Welcome) {  // session launch: greet only a resting duck
+    if (cur == S::Sleeping || cur == S::Idle) enter(s, now);
+    return;
+  }
   if (s == S::Excited) after_wake = S::Idle;  // previewing the art
   else if (s != S::Connecting && (cur == S::Sleeping || cur == S::Excited)) {
     // A message wakes the duck: play Excited, then show the latest message.

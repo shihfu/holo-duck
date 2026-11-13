@@ -286,6 +286,18 @@ def excited(f, shut):
     return out
 
 
+def welcome(f, shut):
+    """Plays once (50 x 100 ms = the 5 s timeout): idle profile, hop round to face you, wave."""
+    side = eye(load("idle"), [(28, 33, 30, 38), (38, 33, 40, 36)], shut)
+    eyes = [(27, 33, 30, 38), (36, 32, 39, 35)]
+    lids = close(f, eyes)
+    f = eye(f, eyes, shut)
+
+    W = [-1, -1, 0, 1, 1, 0]  # rock the raised wing's tip in and out
+    turn = [side] * 3 + [hop(side, 0, -1)] * 2 + [hop(f, 2, 1, 52), hop(f, 3, 0, 52), hop(f, 1, 0, 52), hop(f, 0, -1, 52)]
+    return turn + [shift(f, (42, 36, 48, 40), dx=W[i % 6]) for i in range(36)] + [lids] * 3 + [f] * 2
+
+
 def connecting(f, shut):
     spin = (19, 0, 40, 20)
     blues = [c for c in pick(f, spin).values() if c[2] > c[0] + 35]
@@ -319,6 +331,7 @@ STATES = [  # (state, sprite, ms per frame, random blink, pose)
     ("error", "error", 100, False, error),  # slow blink is in the sequence
     ("sleeping", "sleeping", 250, False, sleeping),
     ("excited", "excited", 80, True, excited),
+    ("welcome", "welcome", 100, True, welcome),  # plays once: frames x ms == its timeout
     ("connecting", "loading", 125, True, connecting),
 ]
 

@@ -53,6 +53,7 @@ One state per tile in `juno-design-mock.png`:
 | `SUCCESS`    | SUCCESS           | Happy, celebratory animation                            |
 | `ERROR`      | ERROR             | Confused/worried expression                             |
 | `EXCITED`    | EXCITED           | Wakes up / hops when a message wakes it from `SLEEPING` |
+| `WELCOME`    | --                | Turns to face you and waves when you launch Copilot     |
 | `SLEEPING`   | SLEEPING          | Sleeping or resting (session ended or long idle)        |
 | `CONNECTING` | LOADING           | Loading animation while joining Wi-Fi or Wi-Fi was lost |
 
@@ -222,6 +223,7 @@ copies (fastest), and the GIFs show the motion without flashing.
 | error | 100 | Short shake, then the head droops | Wince, then slow blinks | Swirl wobbles |
 | sleeping | 250 | Slow breathing | Closed | Two Z's rise, drift and fade |
 | excited | 80 | Big hop with squash and stretch, wings flap | Blink | Motion lines flicker |
+| welcome | 100 | Hops to face front, then waves the raised wing (plays once, 5 s) | Blink | -- |
 | connecting | 125 | Walks in place (lean, lift a foot, bob) | Blink, look up at the spinner | Spinner dots rotate |
 
 Skip rotation and smooth tilt; they look jagged on low-resolution pixel
@@ -537,6 +539,7 @@ missed (e.g. Esc/Ctrl+C interrupts, crashed session):
 | From                              | To         | After        |
 |-----------------------------------|------------|--------------|
 | `EXCITED`                         | latest state received | ~2 s |
+| `WELCOME`                         | `IDLE`     | 5 s          |
 | `SUCCESS`                         | `IDLE`     | ~5 s         |
 | `ERROR`                           | `IDLE`     | ~5 s         |
 | `THINKING`/`WORKING`/`PERMISSION` | `IDLE`     | ~30 min with no message |
@@ -546,6 +549,10 @@ A message that arrives while `SLEEPING` plays `EXCITED` first, then
 shows the latest state received (hooks never send `excited`;
 `state=excited` still works for previewing the art). All durations are
 constants to tune on real sessions.
+
+`welcome` is accepted only while `SLEEPING` (screen on or off) or
+`IDLE`; other states ignore it. From `SLEEPING` it plays without
+`EXCITED`. Any other message replaces `WELCOME` at once.
 
 ------------------------------------------------------------------------
 
@@ -597,7 +604,14 @@ Notes:
 -   `sessionStart` is not used. It fires with the first prompt, not at
     launch, about 1 s before `userPromptSubmitted`, so `EXCITED` would
     be replaced at once. The duck plays `EXCITED` itself on wake
-    (Phase 4).
+    (Phase 4). Verified again on CLI 1.0.111: launching `copilot`
+    fires no hook.
+-   `WELCOME` comes from a shell wrapper instead of a hook. Add it to
+    `~/.zshrc`, then open a new terminal:
+
+    ``` sh
+    copilot() { ( curl -4 -s -m 1 -d state=welcome http://duck.local/state >/dev/null 2>&1 & ); command copilot "$@"; }
+    ```
 -   Use `notification`, **not** `permissionRequest`, for `PERMISSION`.
     `permissionRequest` fires even when the tool is auto-approved.
 -   `agentStop` fires at the end of **every** turn, so `SUCCESS` means

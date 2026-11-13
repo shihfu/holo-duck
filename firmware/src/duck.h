@@ -2,14 +2,14 @@
 #include <stdint.h>
 
 enum class DuckState : uint8_t {
-  Idle, Thinking, Working, Permission, Success, Error, Sleeping, Excited,
+  Idle, Thinking, Working, Permission, Success, Error, Sleeping, Excited, Welcome,
   Connecting,  // firmware-only: joining Wi-Fi or Wi-Fi lost
 };
 
 // Names accepted by POST /state, in DuckState order.
 static const char *const DUCK_STATE_NAMES[] = {
     "idle", "thinking", "working", "permission",
-    "success", "error", "sleeping", "excited"};
+    "success", "error", "sleeping", "excited", "welcome"};
 
 void duck_set_state(DuckState s, uint32_t now_ms);
 DuckState duck_state();
